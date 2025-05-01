@@ -1,425 +1,233 @@
-﻿#include <stdio.h>
 #include <iostream>
+#include <fstream>
 #include <vector>
 #include <queue>
-#include <Windows.h>
-#include <string>
 #include <map>
-#include <unordered_map>
-#include <fstream>
+#include <string>
+#include <memory>
 #include <clocale>
-#include <stdlib.h>
 #include <bitset>
+#include <iomanip>
+#include <cstdint>
 
 using namespace std;
 
-// структура для представления узла дерева
-struct TreeNode {
-    char key;                // символ
-    unsigned long long frequency;  // частота символа
-    TreeNode* left;          // левый дочерний узел
-    TreeNode* right;         // правый дочерний узел
-};
+struct HuffmanNode {
+    char symbol;
+    int count;
+    shared_ptr<HuffmanNode> left, right;
 
-// структура для представления дерева хафмана
-struct HuffmanTree {
-    TreeNode* root;          // корень дерева
-};
-
-// структура для сравнения узлов по частоте (для использования в очереди с приоритетом)
-struct FrequencyCompare {
-    bool operator() (TreeNode* left, TreeNode* right) {
-        return left->frequency > right->frequency;  // узел с меньшей частотой должен быть в приоритете
+    HuffmanNode(char sym, int cnt) : symbol(sym), count(cnt), left(nullptr), right(nullptr) {}
+    HuffmanNode(int cnt, shared_ptr<HuffmanNode> l, shared_ptr<HuffmanNode> r)
+        : symbol('\0'), count(cnt), left(l), right(r) {
     }
 };
 
-// функция для создания нового узла
-TreeNode* CreateTreeNode(char ch = '\0', unsigned long long freq = 0, TreeNode* left = NULL, TreeNode* right = NULL) {
-    TreeNode* node = new TreeNode();
-    node->key = ch;
-    node->frequency = freq;
-    node->left = left;
-    node->right = right;
+struct NodeCompare {
+    bool operator()(const shared_ptr<HuffmanNode>& a, const shared_ptr<HuffmanNode>& b) const {
+        return a->count > b->count;
+    }
+};
 
-    return node;
+map<char, int> countSymbols(const string& text) {
+    map<char, int> counts;
+    for (char c : text) counts[c]++;
+    return counts;
 }
 
-// функция для построения дерева хафмана из очереди узлов
-HuffmanTree BuildHuffmanTree(priority_queue<TreeNode*, vector<TreeNode*>, FrequencyCompare> nodes) {
-    HuffmanTree tree;
-    tree.root = NULL;
+shared_ptr<HuffmanNode> createHuffmanTree(const map<char, int>& counts) {
+    priority_queue<shared_ptr<HuffmanNode>, vector<shared_ptr<HuffmanNode>>, NodeCompare> pq;
 
-    // если очередь пуста, возвращаем пустое дерево
-    if (nodes.size() == 0)
-        return tree;
-
-    // если в очереди только один элемент, он становится корнем
-    if (nodes.size() == 1) {
-        TreeNode* leaf = nodes.top();
-        tree.root = CreateTreeNode('\0', leaf->frequency, leaf, NULL);
-        return tree;
+    for (const auto& entry : counts) {
+        pq.push(make_shared<HuffmanNode>(entry.first, entry.second));
     }
 
-    // построение дерева: объединение двух узлов с минимальной частотой
-    while (nodes.size() != 1) {
-        TreeNode* left = nodes.top();  // извлекаем левый узел
-        nodes.pop();
-        TreeNode* right = nodes.top();  // извлекаем правый узел
-        nodes.pop();
-
-        // создаем новый узел с суммарной частотой и добавляем его обратно в очередь
-        nodes.push(CreateTreeNode('\0', left->frequency + right->frequency, left, right));
+    while (pq.size() > 1) {
+        auto left = pq.top(); pq.pop();
+        auto right = pq.top(); pq.pop();
+        int total = left->count + right->count;
+        pq.push(make_shared<HuffmanNode>(total, left, right));
     }
 
-    // корень дерева,  это оставшийся узел в очереди
-    tree.root = nodes.top();
-    return tree;
+    return pq.top();
 }
 
-// функция для генерации кодов хафмана для каждого символа
-void GenerateHuffmanCodes(TreeNode* root, unordered_map<char, string>& huffmanCodes, string code) {
-    if (root == NULL) return;
+void generateCodes(const shared_ptr<HuffmanNode>& node, string code, map<char, string>& codes) {
+    if (!node) return;
 
-    // если узел — лист, то добавляем его код в таблицу
-    if (root->left == NULL && root->right == NULL) {
-        if (code == "") {
-            huffmanCodes[root->key] = "0";
-            return;
+    if (!node->left && !node->right) {
+        codes[node->symbol] = code;
+        return;
+    }
+
+    generateCodes(node->left, code + "0", codes);
+    generateCodes(node->right, code + "1", codes);
+}
+
+string encodeText(const string& text, const map<char, string>& codes) {
+    string result;
+    for (char c : text) result += codes.at(c);
+    return result;
+}
+
+void saveCompressed(ofstream& out, const map<char, string>& codes, const string& encoded) {
+    size_t codeCount = codes.size();
+    out.write(reinterpret_cast<const char*>(&codeCount), sizeof(codeCount));
+
+    for (const auto& entry : codes) {
+        out.put(entry.first);
+        uint8_t len = static_cast<uint8_t>(entry.second.length());
+        out.put(static_cast<char>(len));
+
+        uint32_t packed = 0;
+        for (char bit : entry.second) {
+            packed = (packed << 1) | (bit == '1' ? 1 : 0);
         }
-
-        huffmanCodes[root->key] = code;
+        out.write(reinterpret_cast<const char*>(&packed), sizeof(packed));
     }
 
-    // рекурсивный вызов для левого и правого поддерева
-    GenerateHuffmanCodes(root->left, huffmanCodes, code + "0");
-    GenerateHuffmanCodes(root->right, huffmanCodes, code + "1");
-}
+    uint8_t byte = 0;
+    int bitsLeft = 7;
 
-// функция для записи числа в бинарном формате в файл
-void WriteBinaryNumberToFile(ofstream& out, int number) {
-    unsigned char mask = 1;
-    unsigned char byte = 0;
-    bitset<32> binNumber(number);  // представление числа в бинарном формате
-    string binStr = binNumber.to_string();
-    int counter = 0;
-
-    // запись каждого бита в байт
-    for (int i = 0; i < binStr.length(); i++) {
-        byte <<= mask;
-
-        if (binStr[i] == '1') {
-            byte |= mask;
-        }
-        counter++;
-        if (counter == 8) {
-            counter = 0;
-            out.put(byte);
+    for (char bit : encoded) {
+        if (bit == '1') byte |= (1 << bitsLeft);
+        if (--bitsLeft < 0) {
+            out.put(static_cast<char>(byte));
             byte = 0;
+            bitsLeft = 7;
+        }
+    }
+
+    if (bitsLeft != 7) out.put(static_cast<char>(byte));
+}
+
+void compressFile(ifstream& in, ofstream& out) {
+    string text((istreambuf_iterator<char>(in)), istreambuf_iterator<char>());
+    auto counts = countSymbols(text);
+    auto tree = createHuffmanTree(counts);
+
+    map<char, string> codes;
+    generateCodes(tree, "", codes);
+
+    string encoded = encodeText(text, codes);
+    saveCompressed(out, codes, encoded);
+
+    cout << "Compression complete:\n";
+    cout << "Original: " << text.size() << " bytes\n";
+    cout << "Compressed: " << out.tellp() << " bytes\n";
+}
+
+void loadCompressed(ifstream& in, map<char, string>& codes, string& encoded) {
+    size_t codeCount;
+    in.read(reinterpret_cast<char*>(&codeCount), sizeof(codeCount));
+
+    for (size_t i = 0; i < codeCount; ++i) {
+        char sym;
+        in.get(sym);
+        uint8_t len;
+        in.get(reinterpret_cast<char&>(len));
+        uint32_t packed;
+        in.read(reinterpret_cast<char*>(&packed), sizeof(packed));
+
+        string code;
+        for (int j = len - 1; j >= 0; --j) {
+            code += ((packed >> j) & 1) ? '1' : '0';
+        }
+        codes[sym] = code;
+    }
+
+    char byte;
+    while (in.get(byte)) {
+        for (int i = 7; i >= 0; --i) {
+            encoded += ((byte >> i) & 1) ? '1' : '0';
         }
     }
 }
 
-// функция для чтения числа из файла в бинарном формате
-int ReadBinaryNumberFromFile(ifstream& in) {
-    unsigned char mask = 1;
-    int result = 0;
-    string binStr = "";
+string decodeText(const string& encoded, const shared_ptr<HuffmanNode>& root) {
+    string result;
+    auto node = root;
 
-    // чтение 4 байт из файла и преобразование их в строку бит
-    for (int i = 0; i < 4; i++) {
-        unsigned char a = in.get();
-        bitset<8> b(a);
-        binStr += b.to_string();
-    }
-
-    // преобразуем строку бит в число
-    bitset<32> tmp(binStr);
-    return tmp.to_ullong();
-}
-
-// функция для записи закодированных данных в файл
-void WriteEncodedDataToFile(const string& encode, ofstream& out, map<char, int> Tab) {
-    unsigned char byte = 0;
-    unsigned char mask = 1;
-    size_t counter = 0;
-
-    // временный файл для хранения промежуточных данных
-    ofstream tempFile("tmp.txt", ios::binary);
-
-    counter = 0;
-    for (int i = 0; i < encode.size(); i++) {
-        byte <<= mask;
-
-        if (encode[i] == '1')
-            byte |= mask;
-
-        counter++;
-
-        if (counter == 8) {
-            tempFile.put(byte);
-            byte = 0;
-            counter = 0;
+    for (char bit : encoded) {
+        node = (bit == '0') ? node->left : node->right;
+        if (!node->left && !node->right) {
+            result += node->symbol;
+            node = root;
         }
     }
 
-    // обработка оставшихся битов
-    if (counter > 0) {
-        byte <<= (8 - counter);  // дополняем до байта
-        tempFile.put(byte);
-    }
-
-    tempFile.close();
-
-    // открываем временный файл и записываем закодированные данные в основной файл
-    ifstream rtempFile("tmp.txt", ios::binary);
-    out << counter;
-
-    // записываем частоты символов в файл
-    for (auto p : Tab) {
-        if (p.first == '\n') {
-            out << '_';
-            WriteBinaryNumberToFile(out, p.second);
-            continue;
-        }
-        out << p.first;
-        WriteBinaryNumberToFile(out, p.second);
-    }
-    out << "\n";
-
-    // запись закодированных символов
-    char current;
-    while (rtempFile.get(current))
-        out << current;
-
-    rtempFile.close();
-    remove("tmp.txt");
+    return result;
 }
 
-// функция для записи дерева Хаффмана в файл
-// это нужно для декодирования
-void WriteHuffmanTreeToFile(const unordered_map<char, string>& huffmanCodes, ofstream& out) {
-    for (auto p : huffmanCodes) {
-        if (p.first == '\n') {
-            out << "_" << " " << p.second << endl;  // символ перевода строки обрабатывается отдельно
-            continue;
-        }
-        out << p.first << " " << p.second << endl;
-    }
-}
+void decompressFile(ifstream& in, ofstream& out) {
+    map<char, string> codes;
+    string encoded;
+    loadCompressed(in, codes, encoded);
 
-// декодирование строки с использованием дерева Хаффмана
-string DecodeFromTree(TreeNode* root, const string& encode) {
-    string decoded = "";
-    TreeNode* current = root;
-
-    // проходим по всем битам закодированной строки
-    for (int i = 0; i < encode.size(); i++) {
-        if (encode[i] == '0')
-            current = current->left;
-        if (encode[i] == '1')
-            current = current->right;
-
-        // когда достигнут лист дерева, добавляем символ в результат
-        if (current->left == NULL && current->right == NULL) {
-            decoded += current->key;
-            current = root;
-        }
-    }
-
-    return decoded;
-}
-
-// декодирование с использованием таблицы кодов Хафмана
-string DecodeFromHuffmanCodes(const string& encode, const unordered_map<char, string>& huffmanCodes) {
-    string decoded = "";
-    string code = "";
-
-    // если в таблице один символ, просто повторяем его
-    if (huffmanCodes.size() == 1) {
-        for (auto p : huffmanCodes)
-            decoded += p.first;
-        return decoded;
-    }
-
-    // проходим по всем битам закодированной строки
-    for (int i = 0; i < encode.size(); i++) {
-        code += encode[i];
-        for (auto p : huffmanCodes) {
-            if (p.second == code) {
-                if (p.first == '_') {
-                    decoded += '\n';  // обрабатываем символ перевода строки
-                    code = "";
-                    break;
-                }
-                decoded += p.first;
-                code = "";
-                break;
+    auto root = make_shared<HuffmanNode>('\0', 0);
+    for (const auto& entry : codes) {
+        auto node = root;
+        for (char bit : entry.second) {
+            if (bit == '0') {
+                if (!node->left) node->left = make_shared<HuffmanNode>('\0', 0);
+                node = node->left;
+            }
+            else {
+                if (!node->right) node->right = make_shared<HuffmanNode>('\0', 0);
+                node = node->right;
             }
         }
+        node->symbol = entry.first;
     }
 
-    return decoded;
+    string text = decodeText(encoded, root);
+    out << text;
 }
-
-// чтение закодированного текста из файла
-string ReadEncodedDataFromFile(ifstream& file, map<char, int>& Tab) {
-    string encode = "";
-    unsigned char byte;
-    unsigned char mask = 1;
-    size_t counterBits = file.get() - '0';
-
-    char current;
-    while (file.get(current)) {
-        if (current == '_') {
-            Tab['\n'] = ReadBinaryNumberFromFile(file);
-            continue;
-        }
-        if (current == '\n') {
-            break;
-        }
-        Tab[current] = ReadBinaryNumberFromFile(file);
-    }
-
-    // чтение закодированных битов
-    while (file.get((char&)byte)) {
-        for (int i = 7; i >= 0; i--) {
-            unsigned char tmp = (byte >> i);
-            if (tmp & mask)
-                encode += '1';
-            else
-                encode += '0';
-        }
-    }
-
-    encode = encode.substr(0, encode.size() - (8 - counterBits));  // убираем лишние биты
-    return encode;
-}
-
-void PerformHuffmanCoding(ifstream& in, ofstream& out) {
-    string originalText = "";                               // исходный текст
-    string encodedText = "";                                 // закодированный текст
-    map<char, int> frequencyTable;                           // таблица частот
-    priority_queue<TreeNode*, vector<TreeNode*>, FrequencyCompare> queue; // очередь с приоритетом
-    unordered_map<char, string> huffmanCodes;                 // таблица кодов хаффмана
-
-    char c;
-    while (in.get(c)) {
-        originalText += c;
-    }
-
-    // строим таблицу частотности символов
-    for (int i = 0; i < originalText.size(); i++) {
-        frequencyTable[originalText[i]]++;
-    }
-
-    // создаем узлы с частотами для каждого символа
-    for (auto p : frequencyTable)
-        queue.push(CreateTreeNode(p.first, p.second, NULL, NULL));
-
-    // строим дерево хафмана
-    HuffmanTree tree = BuildHuffmanTree(queue);
-
-    // формируем таблицу кодов
-    GenerateHuffmanCodes(tree.root, huffmanCodes, "");
-
-    // кодируем исходный текст
-    for (int i = 0; i < originalText.size(); i++) {
-        encodedText += huffmanCodes[originalText[i]];
-    }
-
-    size_t bits = 0;
-    WriteEncodedDataToFile(encodedText, out, frequencyTable);
-
-    in.close();
-    out.close();
-
-    cout << "Compression complete. Encoded data saved to 'encoded.txt'" << endl;
-    system("pause");
-    return;
-}
-
-void PerformDecoding(ifstream& in, ofstream& out) {
-    string encodedText = "";
-    string decodedText = "";
-    unordered_map<char, string> huffmanCodes;
-    map<char, int> frequencyTable;
-    priority_queue<TreeNode*, vector<TreeNode*>, FrequencyCompare> queue;
-
-    // чтение закодированных данных
-    encodedText = ReadEncodedDataFromFile(in, frequencyTable);
-
-    // создание дерева хафмана
-    for (auto p : frequencyTable)
-        queue.push(CreateTreeNode(p.first, p.second, NULL, NULL));
-
-    HuffmanTree tree = BuildHuffmanTree(queue);
-
-    // генерация таблицы кодов
-    GenerateHuffmanCodes(tree.root, huffmanCodes, "");
-
-    // декодируем закодированный текст
-    decodedText = DecodeFromHuffmanCodes(encodedText, huffmanCodes);
-
-    // сохраняем декодированный текст в файл
-    out << decodedText;
-
-    in.close();
-    out.close();
-
-    cout << "Decompression complete. Decoded data saved to 'decoded.txt'" << endl;
-    system("pause");
-}
-
 
 int main() {
-    // устанавливаем локализацию для работы с русскими символами
     setlocale(LC_ALL, "rus");
 
-    // вводим название файла для сжатия или распаковки
     string filename;
-    cout << "Enter the filename to process ( exp.txt to compress | encoded.txt to decompress ): ";
+    cout << "Enter filename (exp.txt to compress | encoded.txt to decompress): ";
     cin >> filename;
 
-    // открытие входного и выходного файлов
-    ifstream in(filename, ios::binary);  // открываем файл для чтения
-    if (!in.is_open()) {
-        cout << "Error opening input file!" << endl;
-        return 1;  // возвращаем ошибку, если файл не открыт
-    }
-
-    string option;
-    cout << "Enter '1' to compress or '2' to decompress: ";
-    cin >> option;
-
-    // если выбрана компрессия
-    if (option == "1") {
-        ofstream out("encoded.txt", ios::binary);  // открываем файл для записи
-        if (!out.is_open()) {
-            cout << "Error opening output file for writing!" << endl;
-            return 1;
-        }
-
-        cout << "Compressing file..." << endl;
-        PerformHuffmanCoding(in, out);  // выполняем сжатие с помощью Хаффмана
-        cout << "Compression completed successfully!" << endl;
-    }
-    // если выбрана декомпрессия
-    else if (option == "2") {
-        ofstream out("decoded.txt", ios::binary);  // открываем файл для записи
-        if (!out.is_open()) {
-            cout << "Error opening output file for writing!" << endl;
-            return 1;
-        }
-
-        cout << "Decompressing file..." << endl;
-        PerformDecoding(in, out);  // выполняем декомпрессию
-        cout << "Decompression completed successfully!" << endl;
-    }
-    else {
-        cout << "Invalid option!" << endl;  // в случае неверного ввода делаем
+    ifstream in(filename, ios::binary);
+    if (!in) {
+        cout << "Error opening file!" << endl;
         return 1;
     }
 
-    in.close();  // закрываем входной файл
-    return 0;  // завершаем программу без ошибок
+    string choice;
+    cout << "Enter '1' to compress or '2' to decompress: ";
+    cin >> choice;
+
+    if (choice == "1") {
+        ofstream out("encoded.txt", ios::binary);
+        if (!out) {
+            cout << "Error creating output file!" << endl;
+            return 1;
+        }
+
+        cout << "Compressing..." << endl;
+        compressFile(in, out);
+        cout << "Done!" << endl;
+    }
+    else if (choice == "2") {
+        ofstream out("decoded.txt", ios::binary);
+        if (!out) {
+            cout << "Error creating output file!" << endl;
+            return 1;
+        }
+
+        cout << "Decompressing..." << endl;
+        decompressFile(in, out);
+        cout << "Done!" << endl;
+    }
+    else {
+        cout << "Invalid choice!" << endl;
+        return 1;
+    }
+
+    in.close();
+    return 0;
 }
